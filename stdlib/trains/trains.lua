@@ -14,25 +14,21 @@ local Surface = require 'stdlib/area/surface'
 local Entity = require 'stdlib/entity/entity'
 
 Trains = {} --luacheck: allow defined top
---- This event is fired when a train's id has changed.
--- <p>Train id's are dervied from a property of the train's main locomotive.
--- That means when locomotives are attached/detached from carriages or other
--- locomotives, the locomotive considered the main one can change, leading to a changed
--- in train id.</p>
--- <p>For example: a train with a front and back locomotive will get its id
--- from the front locomotive. If that is disconnected, the back locomotive will become
--- the main one and the train's id will change</p>
--- <p>
+
+--- This event is fired when a train is completely removed
+-- <p>This will fire whenever the last locomotive is removed from a train</p>
+-- <p>For a train consisting of 1 locomotive and 3 wagons the event will fire as soon as
+-- the locomotive is mined, even though the wagons remain
 -- <strong>Event parameters</strong> <br />
 -- A table with the following properties:
 -- <ul>
 -- <li>old_id (int) The id of the train before the change</li>
--- <li>new_id (int) The id of the train after the change</li>
+-- <li>remains_id (int) The id of the remaining wagons or nil if nothing is left TODO this might not be possible
 -- </ul>
 -- </p>
 -- @usage
-----Event.register(Trains.on_train_id_changed, my_handler)
-Trains.on_train_id_changed = script.generate_event_name()
+----Event.register(Trains.on_train_removed, my_handler)
+Trains.on_train_removed = script.generate_event_name()
 
 --- Given search criteria (a table that contains at least a surface_name)
 -- searches the given surface for trains that match the criteria
@@ -71,57 +67,43 @@ function Trains.find_filtered(criteria)
 
     -- Lastly, look up the train ids
     results = table.map(results, function(train)
-        return { train = train, id = Trains.get_main_locomotive(train).unit_number }
+        return { train = train, id = train.id }
     end)
 
     return results
 end
 
---- Find the id of a LuaTrain instance
--- @tparam LuaTrain train
--- @treturn int
-function Trains.get_train_id(train)
-    local loco = Trains.get_main_locomotive(train)
-    return loco and loco.unit_number
-end
-
---- Event fired when some change has happened to a locomotive
+--- Event handler for when a locomotive gets mined or destroyed
 -- @return void
-function Trains._on_locomotive_changed()
-    -- For all the known trains
-    local renames = {}
-    for id, train in pairs(global._train_registry) do
-        -- Check if their known ID is the same as the LuaTrain's dervied id
-        local derived_id = Trains.get_train_id(train)
-        -- If it's not
-        if (id ~= derived_id) then
-            -- Capture the rename
-            table.insert(renames, {old_id = id , new_id = derived_id, train = train })
-        end
-    end
+function Trains._on_locomotive_removed(event)
+    --this is the old train that will become invalid
+    local train = event.entity.train
+    local locomotives = train.locomotives
+    assert(train.valid)
 
-    -- Go over the captured renaming operations
-    for _, renaming in pairs(renames) do
-        -- Rename it in the registry
-        -- and dispatch a renamed event
-        global._train_registry[renaming.new_id] = renaming.train
-        global._train_register[renaming.old_id] = nil
-
-        local event_data = {
-            old_id = renaming.old_id,
-            new_id = renaming.new_id,
-            name = Trains.on_train_id_changed
-        }
-        Event.dispatch(event_data)
+    if #train.carriages > 1 and ( #locomotives.front_movers > 1 or #locomotives.back_movers > 1 ) then
+        -- nothing to do, should be handled by on_train_created
+        return
     end
+    Event.dispatch({ name = Trains._on_train_removed, old_id = train.id })
 end
 
---- Determines which locomotive in a train is the main one
--- @tparam LuaTrain train
--- @treturn LuaEntity the main locomotive
-function Trains.get_main_locomotive(train)
-    if train and train.valid and train.locomotives and (#train.locomotives.front_movers > 0 or #train.locomotives.back_movers > 0) then
-        return train.locomotives.front_movers and train.locomotives.front_movers[1] or train.locomotives.back_movers[1]
+--- Event handler for defines.events.on_train_created
+-- @return void
+function Trains._on_train_created(event)
+    local train = event.train
+    local old_id_1 = event.old_id_1
+    local old_id_2 = event.old_id_2
+    if #train.locomotives.front_movers > 0 or #train.locomotives.back_movers > 0 then
+        global._train_registry[event.train.id] = event.train
+    end
+    if old_id_1 then
+        --copy data via Trains.get/setData ?
+        global._train_registry[old_id_1] = nil
+        if old_id_2 then
+            --copy data via Trains.get/setData ?
+            global._train_registry[old_id_1] = nil
+        end
     end
 end
 
@@ -129,7 +111,7 @@ end
 -- @tparam LuaTrain train
 -- @treturn table
 function Trains.to_entity(train)
-    local name = "train-" .. Trains.get_train_id(train)
+    local name = "train-" .. train.id
     return {
         name = name,
         valid = train.valid,
@@ -172,30 +154,23 @@ end
 -- When developers load this module, we need to
 -- attach some new events
 
--- Filters events related to entity_type
+--- Filters events related to entity_type
 -- @tparam string event_parameter The event parameter to look inside to find the entity type
 -- @tparam string entity_type The entity type to filter events for
--- @tparam callable callback The callback to invoke if the filter passes. The object defined in the event parameter is passed.
+-- @tparam callable callback The callback to invoke if the filter passes. The object defined in the event parameter is passed. <--Why only the parameter????
 local function filter_event(event_parameter, entity_type, callback)
     return function(evt)
         if(evt[event_parameter].type == entity_type) then
-            callback(evt[event_parameter])
+            callback(evt)
         end
     end
 end
 
 -- When a locomotive is removed ..
-Event.register(defines.events.on_entity_died, filter_event('entity', 'locomotive', Trains._on_locomotive_changed))
-Event.register(defines.events.on_preplayer_mined_item, filter_event('entity', 'locomotive', Trains._on_locomotive_changed))
-Event.register(defines.events.on_robot_pre_mined, filter_event('entity', 'locomotive', Trains._on_locomotive_changed))
+Event.register(defines.events.on_entity_died, filter_event('entity', 'locomotive', Trains._on_locomotive_removed))
+Event.register(defines.events.on_player_mined_entity, filter_event('entity', 'locomotive', Trains._on_locomotive_removed))
 
--- When a locomotive is added ..
-Event.register(defines.events.on_train_created,
-    function(event)
-        local train_id = Trains.get_train_id(event.train)
-        global._train_registry[train_id] = event.train
-    end
-)
+Event.register(defines.events.on_train_created, Trains._on_train_created)
 
 -- When the mod is initialized the first time
 Event.register(Event.core_events.init, create_train_registry)
