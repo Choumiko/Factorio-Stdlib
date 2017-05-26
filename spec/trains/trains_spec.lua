@@ -4,7 +4,7 @@
 require 'spec/defines'
 require 'stdlib/event/event'
 require 'stdlib/area/surface'
-require 'spec/trains/fixtures'
+local Train_Spec_Fixtures = require 'spec/trains/fixtures'
 
 empty_locomotives = function() return { front_movers = {}, back_movers = {} } end
 
@@ -21,6 +21,7 @@ describe('when the train module loads', function()
                 event_tbl.name = event_id
                 Event.dispatch(event_tbl)
             end}
+
         _G.game = {tick = 1, players = {}, surfaces = { [1] = { name = 'nauvis', get_trains = function() return {} end }}}
         setmetatable(_G.game.surfaces, { __index = function(tbl, key) for _, surface in pairs(tbl) do if surface['name'] == key then return surface end end return rawget(tbl, key) end })
         _G.global = {}
@@ -215,7 +216,6 @@ describe('Trains module', function()
                 script.raise_event(defines.events.on_train_created, { train = { id = 1002, locomotives = empty_locomotives() }, old_id_1 = 1001, old_id_2 = nil})
 
                 assert.are_equal(nil, global._train_registry[1001])
-
             end)
         end)
 
